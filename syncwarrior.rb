@@ -116,12 +116,12 @@ class SyncWarrior
     read_cache_file
 
     # must have userid till now
-    @service = Connection.new(:userid => userid, 
-                              :password => password, 
-                              :user => opts[:user], 
-                              :apptoken => @apptoken, 
-                              :appid => @appid,
-                              :token => @token)
+    initialize_service(:userid => userid, 
+                       :password => password, 
+                       :user => opts[:user], 
+                       :apptoken => @apptoken, 
+                       :appid => @appid,
+                       :token => @token)
 
     check_changes
   end

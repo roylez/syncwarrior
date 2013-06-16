@@ -12,6 +12,12 @@ class InformationError < Exception; end
 class RemoteAPIError < Exception; end
 
 module Toodledo
+  def self.included(mod)
+  end
+
+  def initialize_service(opts = {})
+    @conn = Connection.new(opts)
+  end
 end
 
 class Toodledo::Connection
@@ -155,7 +161,7 @@ end
 
 module Toodledo
   def check_changes
-    @account_info = @service.get_account 
+    @account_info = @conn.get_account 
 
     if @prev_account_info
       @remote_task_modified    = has_new_info? :lastedit_task
@@ -243,7 +249,7 @@ module Toodledo
       #ntasks = get_tasks(:fields => useful_fields, :comp => 0)
       ntasks = get_tasks(:fields => useful_fields)
     elsif @remote_task_modified
-      ntasks = @service.get_tasks(:fields => useful_fields, :modafter => @last_sync )
+      ntasks = @conn.get_tasks(:fields => useful_fields, :modafter => @last_sync )
     end
     ntasks.each do |t|
       unless id = t[:id] and @task_warrior[id]
@@ -271,7 +277,7 @@ module Toodledo
   def commit_remote_changes
     @push.each do |k, v|
       next if v.empty?
-      res = @service.send("#{k}_tasks".to_sym, v.collect{|uuid| taskwarrior_to_toodle(@task_warrior[uuid])})
+      res = @conn.send("#{k}_tasks".to_sym, v.collect{|uuid| taskwarrior_to_toodle(@task_warrior[uuid])})
       if k == :add  # append remote toodleid to local
         ids = Hash[ [v, res].transpose ]
         ids.each { |uuid, t| @task_warrior[uuid].toodleid = t[:id] }
