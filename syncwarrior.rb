@@ -11,7 +11,7 @@ YAML::ENGINE.yamler = 'psych' # to use UTF-8 in yaml
 require 'securerandom'
 require_relative 'taskwarrior'
 
-require_relative 'adapter/toodledo'
+require_relative 'services/toodledo'
 
 require 'logger'
 #require 'pry-debugger'
@@ -81,7 +81,10 @@ class TaskCollection
   end
 end
 
-class SyncWarrior < Toodledo
+class SyncWarrior
+  include Toodledo
+  include Toodledo::Translation
+
   attr_reader   :userid
 
   def initialize(userid, password, taskfile, compfile, cachefile, opts = {})
@@ -113,73 +116,14 @@ class SyncWarrior < Toodledo
     read_cache_file
 
     # must have userid till now
-    super(:userid => userid, :password => password, :user => opts[:user], :token => @token)
+    @service = Connection.new(:userid => userid, 
+                              :password => password, 
+                              :user => opts[:user], 
+                              :apptoken => @apptoken, 
+                              :appid => @appid,
+                              :token => @token)
 
     check_changes
-  end
-
-  def sync_folders
-    if @remote_folder_modified.nil? or @remote_folder_modified
-      @remote_folders = get_folders
-      @remote_folder_modified =false
-    end
-  end
-
-  def sync_contexts
-    if @remote_context_modified.nil? or @remote_context_modified
-      @remote_contexts = get_contexts
-      @remote_context_modified = false
-    end
-  end
-
-  #def sync_start
-    #@sync_start ||= Time.now.to_i
-  #end
-
-  def sync_tasks
-    # if we first upload, and in the case that a task is modified locally and
-    # completed remotely, the modification would be uploaded to server, and it
-    # remains completed on server. Depending implementation of sync, there could
-    # have been two situations: 1. it could not be marked as completed locally;
-    # 2. it could be marked complete, but all merges done remotely should be
-    # download again.
-    #
-    # If we first download, we could make the merge locally and upload anything
-    # that worth uploading; and next time when sync starts, we only needs to
-    # shift @last_sync a few seconds later to avoid double downloads.
-    #
-    # As TaskWarrior keeps a parent task for recurring items while toodledo does
-    # not, parent/child task pair is treated as a single task when syncing,
-    # which means whenever a recurring item is completed on toodledo, the whole
-    # pair locally are removed from list (completion for child, deletion for
-    # parent). Similar applies to remote modification, deletion or creation.
-    #
-    # The flow of syncing ....
-    #   download -> local merge -> upload -> ( remote merge ) -> save files
-    #
-    #   1. calculate local changes, keep **uuid** in @push
-    #   2. download remote changes, keep changed tasks in @pull
-    #   3. push local changes according to @push
-    #   4. locally merge @pull into @task_warrior
-    #
-    log.info "#{@task_warrior.size} tasks in local repository(completed: #{@task_warrior.completed.size}, pending: #{@task_warrior.pending.size})"
-
-    update_tw_changes
-
-    update_toodle_changes
-
-    local_merge
-
-    %Q{Ready to commit changes: 
-      Upload:     NEW:#{@push[:add].size}    EDIT:#{@push[:edit].size}
-      Download:   EDIT:#{@pull[:edit].size}   DELETE:#{@pull[:delete].size}
-    }.strip.split("\n").each{|l| log.info l }
-
-    commit_changes
-
-    log.info "Commit completed. "
-
-    log.info "#{@task_warrior.size} tasks in local repository(completed: #{@task_warrior.completed.size}, pending: #{@task_warrior.pending.size})"
   end
 
   def local_merge
@@ -192,7 +136,7 @@ class SyncWarrior < Toodledo
     @logger
   end
 
-  def update_tw_changes
+  def update_local_changes
     # upload new tasks
     new_ids = @task_warrior.new_task_ids
     new_ids.each { |uuid| @push[:add] << uuid }
@@ -217,46 +161,8 @@ class SyncWarrior < Toodledo
     end
   end
 
-  def update_toodle_changes
-    useful_fields = [:folder, :context, :tag, :duedate, :priority, :added, :repeat] 
-
-    # download new tasks and edited tasks 
-    #
-    ntasks = []
-    if first_sync?
-      #ntasks = get_tasks(:fields => useful_fields, :comp => 0)
-      ntasks = get_tasks(:fields => useful_fields)
-    elsif @remote_task_modified
-      ntasks = get_tasks(:fields => useful_fields, :modafter => @last_sync )
-    end
-    ntasks.each do |t|
-      unless id = t[:id] and @task_warrior[id]
-        @pull[:add] << t
-        log.new("=> #{t}")
-      else
-        @pull[:edit] << t
-        log.edit("=> #{t}")
-      end
-    end
-
-    # download the list of deleted tasks
-    #
-    if @remote_task_deleted
-      dtasks = get_deleted_tasks(@last_sync)
-      # toodledo ids in local tasks
-      @pull[:delete] = dtasks.select{|i| i[:id]}
-    end
-
-    @pull[:delete].each do |t|
-      log.delete "=> #{t}"
-    end
-  end
-
   def sync
-
-    sync_folders
-
-    sync_contexts
+    super
 
     sync_tasks
 
@@ -324,28 +230,8 @@ class SyncWarrior < Toodledo
     not @last_sync or @task_warrior.size.zero?
   end
 
-  def check_changes
-    if @prev_account_info
-      @remote_task_modified    = has_new_info? :lastedit_task
-      @remote_task_deleted     = has_new_info? :lastdelete_task
-      @remote_folder_modified  = has_new_info? :lastedit_folder
-      @remote_context_modified = has_new_info? :lastedit_context
-    end
-  end
-
   def commit_local_changes
     @task_warrior.to_file(@task_file, @comp_file)
-  end
-
-  def commit_remote_changes
-    @push.each do |k, v|
-      next if v.empty?
-      res = send("#{k}_tasks".to_sym, v.collect{|uuid| taskwarrior_to_toodle(@task_warrior[uuid])})
-      if k == :add  # append remote toodleid to local
-        ids = Hash[ [v, res].transpose ]
-        ids.each { |uuid, t| @task_warrior[uuid].toodleid = t[:id] }
-      end
-    end
   end
 
   # has new value in account_info?
@@ -383,141 +269,6 @@ class SyncWarrior < Toodledo
     end
   end
 
-  # convert from TaskWarriror to Toodledo format
-  def taskwarrior_to_toodle(task)
-    task = task.dup
-    toodletask = {}
-    toodletask[:title]    = task[:description]
-    toodletask[:id]       = task[:toodleid]                         if task[:toodleid]
-    toodletask[:duedate]  = to_toodle_date(task[:due].to_i)         if task[:due]
-    toodletask[:completed]= to_toodle_date(task[:end].to_i)         if task[:end]
-    toodletask[:priority] = tw_priority_to_toodle(task[:priority])  if task[:priority]
-    toodletask[:folder]   = tw_project_to_toodle(task[:project])    if task[:project]
-    if task[:recur]
-      toodletask[:repeat] = tw_recur_to_toodle(task[:recur])
-      toodletask[:repeatfrom] = @repeat_from
-    end 
-    if task[:tags]
-      context = task[:tags].find{|i| i.start_with? '@' }
-      if context
-        toodletask[:context] = tw_context_to_toodle(context)
-        task[:tags] = task[:tags].select{|t| not t.start_with? '@'}
-      end
-      toodletask[:tag] = task[:tags].join(",")
-    end
-    toodletask
-  end
-
-  # TW project => toodle folder
-  def tw_project_to_toodle(project_name)
-    folder = @remote_folders.find{|f| f[:name] == project_name}
-    unless folder
-      folder = add_folder(project_name).first
-      @remote_folders << folder
-    end
-    folder[:id]
-  end
-
-  def tw_recur_to_toodle(recur)
-    case recur.to_s.downcase
-    when /\A(daily|weekly|biweekly|monthly|quarterly|yearly)\Z/; $1
-    when /\A(annually)\Z/; 'Yearly'
-    when /\A(fortneight)\Z/; 'Biweekly'
-    when /\A(semiannual)\Z/; 'Semiannually'
-    when /\A(weekdays)\Z/; 'Every weekday'
-    when /\A(weekends)\Z/; 'Every weekend'
-    when /\A(monday|tuesday|wednesday|thursday|friday|satday|sunday)/; "Every #{$1}"
-    when /\A(\d)(\w+)\Z/; 
-      unit = case $2
-             when /^da/; 'day'
-             when /^mo/; 'month'
-             when /^(wk|week)/; 'week'
-             when /^(yr|year)/; 'year'
-             end
-      "Every #{$1} #{unit}"
-    end
-  end 
-
-  # TW @tag => toodle context
-  def tw_context_to_toodle(context_name)
-    # remove prefixing '@'
-    context_name = context_name.delete("@")
-    context = @remote_contexts.find{|c| c[:name] == context_name}
-    unless context
-      context = add_context(context_name).first
-      @remote_contexts << context
-    end
-    context[:id]
-  end
-
-  # toodle folder => TW project
-  def toodle_folder_to_tw(folderid)
-    @remote_folders.find{|f| f[:id] == folderid}[:name]
-  end
-
-  def toodle_context_to_tw(contextid)
-    '@' + @remote_contexts.find{|c| c[:id] == contextid}[:name]
-  end
-  
-  def toodle_priority_to_tw(priority)
-    case priority.to_i
-    when 1; 'L'
-    when 2; 'M'
-    when 3; 'H'
-    else; nil
-    end
-  end
-
-  def toodle_repeat_to_tw(repeat)
-    case repeat.downcase
-    when /(daily|weekly|biweekly|monthly|quarterly|semiannual|yearly|weekday|weekend|monday|tuesday|wednesday|thursday|friday|satday|sunday)/; $1
-    when /^every (\d+) (\w+)/; "#{$1}#{$2}"
-    end
-  end 
-
-  def tw_priority_to_toodle(tw_priority)
-    case tw_priority
-    when 'L'; 1
-    when 'M'; 2
-    when 'H'; 3
-    else; 0
-    end
-  end
-
-  # toodle use GMT, all timestamps for date will be adjust to GMT noon
-  #
-  def to_toodle_date(secs, noon = true)
-    t = Time.at(secs).
-      strftime("%Y-%m-%d #{noon ? '12:00:00' : '%H:%M:%S'} UTC")
-    Time.parse(t).to_i
-  end
-
-  def from_toodle_date(secs)
-    t = Time.at(secs).utc.strftime("%Y-%m-%d 00:00:00")
-    Time.parse(t).to_i
-  end
-
-  # convert from toodledo to TaskWarrior format as a hash
-  def toodle_to_taskwarrior(task)
-    twtask = {}
-    twtask[:toodleid]    = task[:id]
-    twtask[:description] = task[:title]
-    twtask[:due]         = from_toodle_date(task[:duedate].to_i)  if task[:duedate]
-    twtask[:tags]        = task[:tag].split(",").map(&:strip)     if task[:tag]
-    twtask[:project]     = toodle_folder_to_tw(task[:folder])     if task[:folder]
-    twtask[:priority]    = toodle_priority_to_tw(task[:priority]) if task[:priority]
-    twtask[:status]      = task[:completed] ? "completed" : "pending"
-    twtask[:entry]       = from_toodle_date(task[:added])
-    twtask[:end]         = from_toodle_date(task[:completed])     if task[:completed]
-    twtask[:modified]    = from_toodle_date(task[:modified])      if task[:modified]
-    twtask[:recur]       = toodle_repeat_to_tw(task[:repeat])     if task[:repeat]
-    if task[:context]
-      con = toodle_context_to_tw(task[:context])
-      twtask[:tags] = twtask[:tags] ? twtask[:tags].concat([ con ]) : [con]
-    end
-
-    twtask
-  end
 end
 
 # prompt user to input something
