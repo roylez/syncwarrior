@@ -173,14 +173,14 @@ module Toodledo
 
   def sync_folders
     if @remote_folder_modified.nil? or @remote_folder_modified
-      @remote_folders = get_folders
+      @remote_folders = @conn.get_folders
       @remote_folder_modified =false
     end
   end
 
   def sync_contexts
     if @remote_context_modified.nil? or @remote_context_modified
-      @remote_contexts = get_contexts
+      @remote_contexts = @conn.get_contexts
       @remote_context_modified = false
     end
   end
@@ -247,7 +247,7 @@ module Toodledo
     ntasks = []
     if first_sync?
       #ntasks = get_tasks(:fields => useful_fields, :comp => 0)
-      ntasks = get_tasks(:fields => useful_fields)
+      ntasks = @conn.get_tasks(:fields => useful_fields)
     elsif @remote_task_modified
       ntasks = @conn.get_tasks(:fields => useful_fields, :modafter => @last_sync )
     end
@@ -317,7 +317,7 @@ module Toodledo::Translation
   def tw_project_to_toodle(project_name)
     folder = @remote_folders.find{|f| f[:name] == project_name}
     unless folder
-      folder = add_folder(project_name).first
+      folder = @conn.add_folder(project_name).first
       @remote_folders << folder
     end
     folder[:id]
@@ -349,7 +349,7 @@ module Toodledo::Translation
     context_name = context_name.delete("@")
     context = @remote_contexts.find{|c| c[:name] == context_name}
     unless context
-      context = add_context(context_name).first
+      context = @conn.add_context(context_name).first
       @remote_contexts << context
     end
     context[:id]
