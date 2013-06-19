@@ -275,13 +275,19 @@ module Toodledo
   end
 
   def commit_remote_changes
-    @push.each do |k, v|
-      next if v.empty?
-      res = @conn.send("#{k}_tasks".to_sym, v.collect{|uuid| taskwarrior_to_toodle(@task_warrior[uuid])})
-      if k == :add  # append remote toodleid to local
-        ids = Hash[ [v, res].transpose ]
-        ids.each { |uuid, t| @task_warrior[uuid].toodleid = t[:id] }
-      end
+    unless @push[:edit].empty?
+      @conn.edit_tasks(@push[:edit].collect{|uuid| taskwarrior_to_toodle(@task_warrior[uuid])})
+    end
+    unless @push[:add].empty?
+      # selecting only parent task for recurring
+      add_list = @push[:add].select{|uuid| not @task_warrior[uuid].parent }
+      res = @conn.add_tasks(add_list.collect{|uuid| taskwarrior_to_toodle(@task_warrior[uuid])})
+      ids = Hash[ [add_list, res].transpose ]
+      ids.each { |uuid, t| 
+        @task_warrior[uuid].toodleid = t[:id] 
+        children = @task_warrior.find_children(uuid)
+        children.each {|ct| ct.toodleid = t[:id] }
+      }
     end
   end
 
